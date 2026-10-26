@@ -8,11 +8,12 @@
   "main": "proxy.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node proxy.js",
-    "dev": "nodemon proxy.js",
-    "pm2": "pm2 start proxy.js --name push_notif_proxy"
+    "start": "cross-env APNS_CERT_PATH=/etc/nginx/certs/apns-cert.pem APNS_KEY_PATH=/etc/nginx/certs/apns-key.pem node proxy.js",
+    "dev": "cross-env APNS_CERT_PATH=/etc/nginx/certs/apns-cert.pem APNS_KEY_PATH=/etc/nginx/certs/apns-key.pem nodemon proxy.js",
+    "pm2": "cross-env APNS_CERT_PATH=/etc/nginx/certs/apns-cert.pem APNS_KEY_PATH=/etc/nginx/certs/apns-key.pem pm2 start proxy.js --name push_notif_proxy"
   },
   "dependencies": {
+    "cross-env": "^10.1.0",
     "nodemon": "^3.1.14",
     "pm2": "^7.0.4"
   }

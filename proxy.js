@@ -1,6 +1,7 @@
 const http = require("http");
 const https = require("https");
 const http2 = require("http2");
+const fs = require("fs");
 
 const PORT = 8084;
 
@@ -13,6 +14,34 @@ const ALLOWED_HOSTS = new Set([
 ]);
 
 const MAX_LOGGED_BODY_BYTES = 2000;
+
+// Optional client certificate for certificate-based (mTLS) APNs auth,
+// as an alternative to token-based (JWT) auth. Only used if both env
+// vars are set and the files load successfully; otherwise the proxy
+// stays on pure token passthrough, relying on the caller's own
+// Authorization header, same as before. A bad/missing path here must
+// never take down Google traffic, so a load failure just disables the
+// cert instead of crashing the process.
+const APNS_CERT_PATH = process.env.APNS_CERT_PATH;
+const APNS_KEY_PATH = process.env.APNS_KEY_PATH;
+
+let apnsClientCert = null;
+
+if (APNS_CERT_PATH && APNS_KEY_PATH) {
+
+    try {
+        apnsClientCert = {
+            cert: fs.readFileSync(APNS_CERT_PATH),
+            key: fs.readFileSync(APNS_KEY_PATH)
+        };
+
+        console.log(`APNs client certificate loaded from ${APNS_CERT_PATH}`);
+    } catch (err) {
+        console.error(
+            `Failed to load APNs client certificate, falling back to token-only auth: ${err.message}`
+        );
+    }
+}
 
 function isAllowedHost(host) {
 
@@ -215,7 +244,8 @@ const server = http.createServer((req, res) => {
         const client = http2.connect(
             `https://${targetHost}:443`,
             {
-                servername: targetHost
+                servername: targetHost,
+                ...apnsClientCert
             }
         );
 
@@ -229,6 +259,50 @@ const server = http.createServer((req, res) => {
             if (!res.headersSent) {
                 sendError(res, 502, err.message);
             }
+        });
+
+
+        // Fires once the TLS handshake to Apple completes. A failed
+        // handshake shows up in client.on("error") above instead - this
+        // is for the ambiguous case where TLS succeeds but as plain
+        // one-way TLS, silently NOT the mTLS we expected, which
+        // otherwise only shows up later as an HTTP-level APNs error
+        // with nothing pointing back at the handshake itself.
+        client.on("connect", () => {
+
+            const socket = client.socket;
+
+            let localCert = null;
+            let peerCert = null;
+
+            try {
+                const cert = socket.getCertificate();
+                localCert = cert && cert.subject ? cert.subject : null;
+            } catch (e) {
+                // Ignore
+            }
+
+            try {
+                const cert = socket.getPeerCertificate();
+                peerCert = cert && cert.subject ? cert.subject : null;
+            } catch (e) {
+                // Ignore
+            }
+
+            emitLog({
+                event: "apns_tls_handshake",
+                host: targetHost,
+                client_cert_configured: Boolean(apnsClientCert),
+                client_cert_sent: Boolean(localCert),
+                client_cert_subject: localCert,
+                server_cert_subject: peerCert,
+                server_cert_authorized: socket.authorized,
+                server_cert_authorization_error: socket.authorizationError ?
+                    String(socket.authorizationError) :
+                    null,
+                protocol: socket.getProtocol ? socket.getProtocol() : null,
+                cipher: socket.getCipher ? socket.getCipher() : null
+            });
         });
 
 
